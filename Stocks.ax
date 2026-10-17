@@ -1,6 +1,6 @@
 # @name    Stocks
 # @desc    Up to twenty stock quotes: logo, ticker and day change over a big price coloured by direction, market-hours banner, last-update time, optional big-move effect, earnings countdown; one by one or as a scrolling ticker (Yahoo Finance and Nasdaq, no API key)
-# @version 4.0
+# @version 4.2
 # @display 52x16
 # @config  stocks  text   "Stocks"            default="AAPL,MSFT,GOOG" maxlen=250 help="Up to twenty Yahoo symbols, comma separated"
 # @config  mode    select "Display"           default=pages options=pages,ticker help="pages: one stock at a time; ticker: scrolling line"
@@ -31,7 +31,9 @@ class Stocks
   var open, closedRound, upd    # inside the session; a quote round ran since the close; clock time of the last quote
   var b1, b2, bcol, bk, bW      # banner rows, colour, glyph kind (0 moon 1 sun 2 sunrise 3 sunset), ticker block width
   var ticks, fi, ei, in_flight  # fetch scheduling: countdown, quote index, earnings index, one request at a time
-  var t0, shift, pauseStart, pauseUntil, frozen, pauseIdx, fired, firedB   # paging clock and the ticker stops
+  var t0, shift, pauseStart, pauseUntil, frozen, pauseIdx   # paging clock and the current ticker stop
+  var prevX, prevXB, armed      # ticker: each block's column last frame, to catch it crossing its stop
+  var prevPos                   # ticker: last frame's scroll position, to notice the line wrapping
 
   def init()
     self.syms = []
@@ -51,7 +53,10 @@ class Stocks
     self.eDay = []
     self.w = []
     self.w2 = []
-    self.fired = []
+    self.prevX = []
+    self.prevXB = 0
+    self.armed = false
+    self.prevPos = 0
     self.lgOpen = []
     self.slots = []
     self.total = 1
@@ -112,7 +117,7 @@ class Stocks
       self.eDay.push(nil)
       self.w.push(0)
       self.w2.push(0)
-      self.fired.push(-1)
+      self.prevX.push(0)
       var q = store.get("q" + str(i))              # last good quote, shown until the first fetch
       if isinstance(q, list) && size(q) == 4 && q[0] == sym && num(q[1]) != nil
         self.apply(i, num(q[1]) + 0.0, num(q[2]), num(q[3]))
@@ -142,7 +147,6 @@ class Stocks
     self.pauseStart = 0
     self.frozen = 0
     self.pauseIdx = -1
-    self.firedB = -1
   end
 
   # Logo source, probed once per symbol and remembered: the transparent set first, else the second source.
@@ -524,41 +528,44 @@ class Stocks
       end
       var pmv = self.pauseUntil > 0 && self.pauseIdx >= 0 ? self.mover(self.pauseIdx) : 0
       if pmv > 0 effect("Fireworks") end
-      var pass = el * self.pxps / 1000 / run
-      var x = width() - el * self.pxps / 1000 % run
+      var pos = el * self.pxps / 1000 % run
+      if pos < self.prevPos rotation.resume() end   # the line has wrapped: a full pass with all its stops is done
+      self.prevPos = pos
+      var x = width() - pos
+      var can = self.armed && self.holdMs > 0        # a stop is the moment a block crosses its stop column
       if self.b1 != nil
+        var stop = width() - self.bW + self.gap
         if x < width() && x + self.bW > 0
           self.glyph(x)
           font("small")
           text(x + 17, 6, self.b1, self.tcol)
           font("large")
           text(x + 17, 14, self.b2, self.bcol)
-          if self.holdMs > 0 && self.pauseUntil == 0 && self.firedB != pass && x <= width() - self.bW + self.gap
-            self.firedB = pass                      # the banner stops too, once per pass
-            self.pauseStart = now_ms()
-            self.pauseUntil = now_ms() + self.holdMs
-            self.frozen = el
-            self.pauseIdx = -1
-          end
         end
+        if can && self.pauseUntil == 0 && x <= stop && self.prevXB > stop
+          self.pauseStart = now_ms()
+          self.pauseUntil = now_ms() + self.holdMs
+          self.frozen = el
+          self.pauseIdx = -1
+        end
+        self.prevXB = x
         x += self.bW
       end
       for i : 0 .. n - 1
         var seg = self.segw(i) + self.gap
-        if x < width() && x + seg > 0                # only what is on the panel; at most two or three logos
-          self.block(i, x)
-          var stop = width() - seg + self.gap       # the block is fully on the panel...
-          if stop < 0 stop = 0 end                  # ...or, if wider than the panel, at the left edge
-          if self.holdMs > 0 && self.pauseUntil == 0 && self.fired[i] != pass && x <= stop
-            self.fired[i] = pass                    # every stock stops once per pass so it can be read
-            self.pauseStart = now_ms()
-            self.pauseUntil = now_ms() + self.holdMs
-            self.frozen = el
-            self.pauseIdx = i
-          end
+        var stop = width() - seg + self.gap         # the block is fully on the panel...
+        if stop < 0 stop = 0 end                    # ...or, if wider than the panel, at the left edge
+        if x < width() && x + seg > 0 self.block(i, x) end   # only what is on the panel
+        if can && self.pauseUntil == 0 && x <= stop && self.prevX[i] > stop
+          self.pauseStart = now_ms()
+          self.pauseUntil = now_ms() + self.holdMs
+          self.frozen = el
+          self.pauseIdx = i
         end
+        self.prevX[i] = x
         x += seg
       end
+      self.armed = true                             # positions are known from here on
       if pmv < 0 overlay("rain") end
       return
     end
@@ -598,8 +605,9 @@ class Stocks
     self.t0 = now_ms()
     self.shift = 0
     self.pauseUntil = 0
-    for i : 0 .. size(self.fired) - 1 self.fired[i] = -1 end
-    self.firedB = -1
+    self.armed = false                              # first frame only records where the blocks are
+    self.prevPos = 0
+    if self.ticker rotation.pause() end             # hold the rotation until the line has run through once
   end
 
   # Knob: turn to step between stocks in both modes; press to switch the change between percent and amount.
@@ -651,8 +659,7 @@ class Stocks
     self.pauseStart = now_ms()
     self.pauseUntil = now_ms() + (self.holdMs > 0 ? self.holdMs : 3000)
     self.pauseIdx = j
-    self.firedB = 0
-    for i : 0 .. n - 1 self.fired[i] = i <= j ? 0 : -1 end   # earlier blocks will not stop again this pass
+    self.armed = false                              # record the new positions before looking for crossings
     return true
   end
 

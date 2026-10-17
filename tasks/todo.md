@@ -19,6 +19,7 @@
 - [x] v3.5: change without sign (always fits with %), direction triangle lower-right (pages) or after the price (ticker)
 - [x] v3.7: ticker in the large font (rows 0-6) on the same baseline; change stays small; widths unchanged
 - [x] v4.0: 20 stocks, speed default 200 %, pause default 2 s, logo source remembered per symbol, symbol whitelist, NO SUCH TICKER page, rewrite for clarity
+- [x] v4.2: ticker stops by edge detection (survive layout changes); rotation held until the line wraps
 - [ ] Optional: tune colours or page time to taste in the web UI
 
 ## Review 2026-10-16
@@ -152,3 +153,17 @@ Settings and stored values go through num()/isinstance checks. Yahoo answers 404
 unknown symbol: bad[i] -> "NO SUCH TICKER" under the name (small font, 50 px, fits
 without a logo), earnings fetch skipped for it. The owner's live settings (speed 243, pause
 3, 11 stocks) are his own and were left alone; defaults only apply to a fresh install.
+
+## v4.2 2026-10-16
+
+Bug "first stock scrolls through without pausing". Trace on the clock: the first stock
+stopped before the first quote arrived, then the banner was inserted at the front of the
+line, the stock was pushed back off-screen, and its once-per-pass flag kept it from
+stopping again. Replaced the pass flags with an edge test per block (prevX > stop and
+x <= stop), armed one frame after on_show and after a knob jump.
+
+Second finding from the same trace: auto transition is on again, and duration() is read
+once when the app is shown, before the banner existed, so the granted time was shorter
+than the pass and the clock switched away mid-stop. Now on_show() calls rotation.pause()
+in ticker mode and the wrap (pos < prevPos) calls rotation.resume(), so a pass always
+completes; duration() stays as the estimate.
