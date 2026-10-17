@@ -1,9 +1,10 @@
-# @name    Stocks
+# @name    US Stock Ticker
+# @author  ag
 # @desc    Up to twenty stock quotes: logo, ticker and day change over a big price coloured by direction, market-hours banner, last-update time, optional big-move effect, earnings countdown; one by one or as a scrolling ticker (Yahoo Finance and Nasdaq, no API key)
-# @version 4.3
+# @version 4.4
 # @display 52x16
 # @config  stocks  text   "Stocks"            default="AAPL,MSFT,GOOG" maxlen=250 help="Up to twenty Yahoo symbols, comma separated; leave empty for the Dow, S&P 500 and Nasdaq"
-# @config  mode    select "Display"           default=pages options=pages,ticker help="pages: one stock at a time; ticker: scrolling line"
+# @config  mode    select "Display"           default=ticker options=ticker,pages help="ticker: scrolling line; pages: one stock at a time"
 # @config  logos   bool   "Company logo"      default=true help="Transparent logos from github.com/nvstly/icons, else financialmodelingprep.com"
 # @config  every   number "Refresh"           default=5 min=1 max=120 unit=min help="During market hours; one last fetch after the close"
 # @config  pageSec number "Seconds per stock" default=3 min=1 max=15 unit=s help="Pages only"

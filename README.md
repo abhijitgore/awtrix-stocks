@@ -6,10 +6,10 @@ change (one decimal, no sign, coloured) in the small font beside it, the price i
 green or red by direction, and a small up or down triangle in the lower-right corner so
 the direction reads without colour. Two styles:
 
-- **pages** (default): one stock at a time, with a dot per stock along the bottom.
-- **ticker**: the same two-row blocks scroll across the panel as a line and each block
+- **ticker** (default): the two-row blocks scroll across the panel as a line and each block
   stops for "Pause per stock" seconds once it is fully on the panel, so every detail can
   be read. 0 seconds scrolls without stopping.
+- **pages**: one stock at a time, with a dot per stock along the bottom.
 
 ![AAPL up](screens/aapl-up.png) ![MSFT down](screens/msft-down.png) ![ticker](screens/ticker-goog.png)
 
@@ -53,7 +53,7 @@ Web UI → Apps → gear on the Stocks row.
 | Setting | Default | Notes |
 |---|---|---|
 | Stocks | AAPL,MSFT,GOOG | Comma-separated Yahoo symbols, up to twenty, 12 characters each of letters, digits, `.`, `-` or `^`. Empty: the Dow, S&P 500 and Nasdaq Composite (`DJI`, `US500`, `IXIC`), without logos or earnings. Class shares use a dash (`BRK-B`); an index is written with its caret (`^GSPC`). A symbol Yahoo does not know shows `NO SUCH TICKER` under its name. |
-| Display | pages | `pages` or `ticker`. |
+| Display | ticker | `ticker` or `pages`. |
 | Company logo | on | Both modes. Off hides the logo and gives the text the full width. Parqet was dropped: it bakes a white square behind most logos. |
 | Refresh | 5 min | Interval between fetch rounds. |
 | Seconds per stock | 3 s | Pages: the app holds the panel for stocks × seconds. |
