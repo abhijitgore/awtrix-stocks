@@ -131,3 +131,7 @@ curl -s http://<clock-host>/api/v1/display/screen   # 52x16 pixel array
 ```
 
 Reference: AWTRIX NG Berry skill, `https://blueforcer.github.io/awtrix-ng/tc002/guides/ai-prompt/`.
+
+## License
+
+MIT, see `LICENSE`. AWTRIX NG itself is licensed separately by its author.
