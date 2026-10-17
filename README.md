@@ -17,8 +17,6 @@ the direction reads without colour. Two styles:
   be read. 0 seconds scrolls without stopping.
 - **pages**: one stock at a time, with a dot per stock along the bottom.
 
-![AAPL up](screens/aapl-up.png) ![MSFT down](screens/msft-down.png) ![ticker](screens/ticker-goog.png)
-
 Quotes come from Yahoo Finance's public chart endpoint. Logos are the transparent
 set in github.com/nvstly/icons (raw.githubusercontent.com); a ticker missing there
 (BRK-B, SPY, QQQ...) falls back to financialmodelingprep.com's image-stock. Both are
@@ -39,8 +37,6 @@ symbol per refresh, fetched one at a time.
 - Values restored from the clock's store are type-checked before use.
 - No API keys exist in the script, so there is nothing to leak from
   `GET /api/v1/apps/script/Stocks`.
-
-![AAPL up](screens/aapl-up.png) ![MSFT down](screens/msft-down.png)
 
 ## Install
 
