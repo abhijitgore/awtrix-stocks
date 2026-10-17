@@ -1,8 +1,8 @@
 # @name    Stocks
 # @desc    Up to twenty stock quotes: logo, ticker and day change over a big price coloured by direction, market-hours banner, last-update time, optional big-move effect, earnings countdown; one by one or as a scrolling ticker (Yahoo Finance and Nasdaq, no API key)
-# @version 4.2
+# @version 4.3
 # @display 52x16
-# @config  stocks  text   "Stocks"            default="AAPL,MSFT,GOOG" maxlen=250 help="Up to twenty Yahoo symbols, comma separated"
+# @config  stocks  text   "Stocks"            default="AAPL,MSFT,GOOG" maxlen=250 help="Up to twenty Yahoo symbols, comma separated; leave empty for the Dow, S&P 500 and Nasdaq"
 # @config  mode    select "Display"           default=pages options=pages,ticker help="pages: one stock at a time; ticker: scrolling line"
 # @config  logos   bool   "Company logo"      default=true help="Transparent logos from github.com/nvstly/icons, else financialmodelingprep.com"
 # @config  every   number "Refresh"           default=5 min=1 max=120 unit=min help="During market hours; one last fetch after the close"
@@ -20,7 +20,7 @@ import string
 class Stocks
   # Per stock, index i: symbol, its URL-safe form, logo URL (nil until known), price text, direction,
   # percent and amount change, change text, change colour, ticker ink width, earnings text, unknown-symbol flag.
-  var syms, usym, logo, lblP, dir, pct, chg, pTxt, pcol, sw, eTxt, bad
+  var syms, usym, disp, isIdx, logo, lblP, dir, pct, chg, pTxt, pcol, sw, eTxt, bad
   var eAbs, eFlag, eDay         # earnings day (days since 1970, exchange time), BMO/AMC/"", day it was fetched
   var w, w2, L, dirty           # ticker: top-row and price-row widths, total line length, remeasure flag
   var slots, total              # pages: [stock, kind, ms] with kind 0 banner, 1 price, 2 earnings; total ms of one cycle
@@ -38,6 +38,8 @@ class Stocks
   def init()
     self.syms = []
     self.usym = []
+    self.disp = []
+    self.isIdx = []
     self.logo = []
     self.lblP = []
     self.dir = []
@@ -95,13 +97,21 @@ class Stocks
     # Symbols: letters, digits, dot, dash and a leading ^ for indices; nothing else reaches a URL.
     var raw = store.get("stocks")
     var found = raw == nil ? [] : re.matchall("[A-Za-z0-9.^-]+", str(raw))
+    var any = false
+    for m : found
+      if size(m) <= 12 any = true end
+    end
+    if !any found = ["^DJI", "^GSPC", "^IXIC"] end    # nothing configured: the three US indices
     for m : found
       if size(self.syms) >= 20 break end
       if size(m) > 12 continue end
       var i = size(self.syms)
       var sym = string.toupper(m)
       self.syms.push(sym)
-      self.usym.push(string.tr(sym, "^", "%5E"))
+      var idx = string.find(sym, "^") == 0           # an index symbol starts with a caret
+      self.isIdx.push(idx)
+      self.usym.push(idx ? "%5E" + sym[1..-1] : sym)   # encoded for the URL
+      self.disp.push(sym == "^GSPC" ? "US500" : (idx ? sym[1..-1] : sym))   # shown without it
       self.logo.push(nil)
       self.lblP.push("...")
       self.dir.push(0)
@@ -129,7 +139,9 @@ class Stocks
         self.eDay[i] = num(e[3])
       end
       var lg = store.get("lg" + str(i))            # which logo source answered, decided once per symbol
-      if isinstance(lg, list) && size(lg) == 2 && lg[0] == sym
+      if self.isIdx[i]
+        self.logo[i] = nil                         # an index has no logo
+      elif isinstance(lg, list) && size(lg) == 2 && lg[0] == sym
         self.logo[i] = str(lg[1])
       else                                         # not decided yet: draw from the first source meanwhile
         self.logo[i] = "https://raw.githubusercontent.com/nvstly/icons/main/ticker_icons/" + self.usym[i] + ".png"
@@ -210,7 +222,7 @@ class Stocks
       var v = self.showAmt ? self.chg[i] : self.pct[i]
       self.pcol[i] = v == nil ? 0x808080 : (v > 0 ? self.upc : (v < 0 ? self.dnc : 0x808080))
       font("large")
-      self.sw[i] = text_ink_width(self.syms[i])
+      self.sw[i] = text_ink_width(self.disp[i])
       font("small")
       self.pTxt[i] = v == nil ? "--" : self.fit(35 - self.sw[i] - 2, v)   # 35 columns beside the logo
       s.push([i, 1, self.pageMs + (self.mover(i) != 0 ? self.holdMs : 0)])
@@ -428,7 +440,7 @@ class Stocks
       return
     end
     var td = self.today()
-    while self.ei < size(self.syms) && (self.eDay[self.ei] == td || self.bad[self.ei]) self.ei += 1 end
+    while self.ei < size(self.syms) && (self.eDay[self.ei] == td || self.bad[self.ei] || self.isIdx[self.ei]) self.ei += 1 end
     if self.ei < size(self.syms)
       var i = self.ei
       self.ei += 1
@@ -489,15 +501,15 @@ class Stocks
   def block(i, x)
     if self.bad[i]                                  # unknown symbol: the name over the message, no logo
       font("large")
-      text(x, 6, self.syms[i], self.tcol)
+      text(x, 6, self.disp[i], self.tcol)
       font("small")
       text(x, 14, "NO SUCH TICKER", self.dnc)
       return 0
     end
     var x0 = x
-    if self.logos && icon(self.logo[i], x, 0) x0 = x + 17 end   # logo in columns 0-15, one dark column
+    if self.logos && self.logo[i] != nil && icon(self.logo[i], x, 0) x0 = x + 17 end   # logo in columns 0-15, one dark column
     font("large")
-    text(x0, 6, self.syms[i], self.tcol)
+    text(x0, 6, self.disp[i], self.tcol)
     font("small")
     var a = self.sw[i] + 2 + text(x0 + self.sw[i] + 2, 6, self.pTxt[i], self.pcol[i])
     if self.eTxt[i] != nil text(x0 + a, 6, " EARN " + self.eTxt[i], self.amber) end
@@ -588,7 +600,7 @@ class Stocks
       cur = -1
     elif sl[1] == 2                                 # earnings page
       font("large")
-      text(0, 6, self.syms[i] + " EARNS", self.tcol)
+      text(0, 6, self.disp[i] + " EARNS", self.tcol)
       text(0, 14, self.eTxt[i], self.amber)
     else
       var mv = self.mover(i)

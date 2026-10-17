@@ -20,6 +20,7 @@
 - [x] v3.7: ticker in the large font (rows 0-6) on the same baseline; change stays small; widths unchanged
 - [x] v4.0: 20 stocks, speed default 200 %, pause default 2 s, logo source remembered per symbol, symbol whitelist, NO SUCH TICKER page, rewrite for clarity
 - [x] v4.2: ticker stops by edge detection (survive layout changes); rotation held until the line wraps
+- [x] v4.3: empty Stocks field falls back to ^DJI, ^GSPC, ^IXIC shown as DJI, US500, IXIC; indices skip logo and earnings
 - [ ] Optional: tune colours or page time to taste in the web UI
 
 ## Review 2026-10-16
@@ -167,3 +168,9 @@ once when the app is shown, before the banner existed, so the granted time was s
 than the pass and the clock switched away mid-stop. Now on_show() calls rotation.pause()
 in ticker mode and the wrap (pos < prevPos) calls rotation.resume(), so a pass always
 completes; duration() stays as the estimate.
+
+## v4.3 2026-10-16
+
+Empty list -> the three US indices. string.tr() maps characters one to one, so
+tr("^DJI", "^", "%5E") gave "%DJI" and Yahoo answered nothing; the caret is now encoded
+by substring. Index symbols carry no logo (nil) and are skipped by the earnings loop.

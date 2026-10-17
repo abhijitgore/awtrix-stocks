@@ -52,7 +52,7 @@ Web UI → Apps → gear on the Stocks row.
 
 | Setting | Default | Notes |
 |---|---|---|
-| Stocks | AAPL,MSFT,GOOG | Comma-separated Yahoo symbols, up to twenty, 12 characters each of letters, digits, `.`, `-` or `^`. Class shares use a dash (`BRK-B`); an index is written with its caret (`^GSPC`). A symbol Yahoo does not know shows `NO SUCH TICKER` under its name. |
+| Stocks | AAPL,MSFT,GOOG | Comma-separated Yahoo symbols, up to twenty, 12 characters each of letters, digits, `.`, `-` or `^`. Empty: the Dow, S&P 500 and Nasdaq Composite (`DJI`, `US500`, `IXIC`), without logos or earnings. Class shares use a dash (`BRK-B`); an index is written with its caret (`^GSPC`). A symbol Yahoo does not know shows `NO SUCH TICKER` under its name. |
 | Display | pages | `pages` or `ticker`. |
 | Company logo | on | Both modes. Off hides the logo and gives the text the full width. Parqet was dropped: it bakes a white square behind most logos. |
 | Refresh | 5 min | Interval between fetch rounds. |
