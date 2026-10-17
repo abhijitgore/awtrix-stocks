@@ -1,4 +1,10 @@
-# awtrix-stocks
+# US Stock Ticker for AWTRIX NG
+
+Published on the AWTRIX Hub: https://awtrix.de/script/wO9XGWZKxKTx (install from there with one click).
+
+| Ticker mode | Pages mode |
+|---|---|
+| ![scrolling ticker](screens/demo-ticker.gif) | ![one stock per page](screens/demo-pages.gif) |
 
 Berry app for the Ulanzi TC002 running AWTRIX NG. Shows up to twenty stock quotes, each
 as one frame: the company logo on the left, the ticker in the large font with the day
