@@ -1,0 +1,671 @@
+# @name    Stocks
+# @desc    Up to twenty stock quotes: logo, ticker and day change over a big price coloured by direction, market-hours banner, last-update time, optional big-move effect, earnings countdown; one by one or as a scrolling ticker (Yahoo Finance and Nasdaq, no API key)
+# @version 4.0
+# @display 52x16
+# @config  stocks  text   "Stocks"            default="AAPL,MSFT,GOOG" maxlen=250 help="Up to twenty Yahoo symbols, comma separated"
+# @config  mode    select "Display"           default=pages options=pages,ticker help="pages: one stock at a time; ticker: scrolling line"
+# @config  logos   bool   "Company logo"      default=true help="Transparent logos from github.com/nvstly/icons, else financialmodelingprep.com"
+# @config  every   number "Refresh"           default=5 min=1 max=120 unit=min help="During market hours; one last fetch after the close"
+# @config  pageSec number "Seconds per stock" default=3 min=1 max=15 unit=s help="Pages only"
+# @config  speed   slider "Ticker speed"      default=200 min=25 max=300 unit=% help="Ticker only"
+# @config  gap     number "Space between stocks" default=24 min=4 max=80 unit=px help="Ticker only"
+# @config  hold    number "Pause per stock"   default=2 min=0 max=15 unit=s help="Ticker: each stock stops this long once it is fully on the panel"
+# @config  fx      bool   "Big move effect"    default=false help="Fireworks (up) or rain (down) behind a stock whose day change passes the alert percentage"
+# @config  move    number "Big move alert"    default=3 min=0 max=50 unit=%
+# @config  up      color  "Up colour"         default=#00C853
+# @config  down    color  "Down colour"       default=#FF1744
+
+import string
+
+class Stocks
+  # Per stock, index i: symbol, its URL-safe form, logo URL (nil until known), price text, direction,
+  # percent and amount change, change text, change colour, ticker ink width, earnings text, unknown-symbol flag.
+  var syms, usym, logo, lblP, dir, pct, chg, pTxt, pcol, sw, eTxt, bad
+  var eAbs, eFlag, eDay         # earnings day (days since 1970, exchange time), BMO/AMC/"", day it was fetched
+  var w, w2, L, dirty           # ticker: top-row and price-row widths, total line length, remeasure flag
+  var slots, total              # pages: [stock, kind, ms] with kind 0 banner, 1 price, 2 earnings; total ms of one cycle
+  var ticker, logos, fx, showAmt, upc, dnc, tcol, amber
+  var period, pageMs, pxps, gap, moveP, holdMs, opts, probe, eopts
+  var lgOpen                    # stocks whose logo source is not decided yet
+  var ps, pe, goff              # exchange regular session start/end (UTC seconds) and its UTC offset, from the quote
+  var open, closedRound, upd    # inside the session; a quote round ran since the close; clock time of the last quote
+  var b1, b2, bcol, bk, bW      # banner rows, colour, glyph kind (0 moon 1 sun 2 sunrise 3 sunset), ticker block width
+  var ticks, fi, ei, in_flight  # fetch scheduling: countdown, quote index, earnings index, one request at a time
+  var t0, shift, pauseStart, pauseUntil, frozen, pauseIdx, fired, firedB   # paging clock and the ticker stops
+
+  def init()
+    self.syms = []
+    self.usym = []
+    self.logo = []
+    self.lblP = []
+    self.dir = []
+    self.pct = []
+    self.chg = []
+    self.pTxt = []
+    self.pcol = []
+    self.sw = []
+    self.eTxt = []
+    self.bad = []
+    self.eAbs = []
+    self.eFlag = []
+    self.eDay = []
+    self.w = []
+    self.w2 = []
+    self.fired = []
+    self.lgOpen = []
+    self.slots = []
+    self.total = 1
+    self.L = 0
+    self.dirty = true
+    self.ticker = store.get("mode") == "ticker"
+    self.logos = store.get("logos") == true
+    self.fx = store.get("fx") == true
+    self.showAmt = store.get("showAmt") == true
+    self.upc = store.get("up")
+    self.dnc = store.get("down")
+    self.amber = 0xFFB300
+    self.tcol = settings.get("textColor")
+    if self.tcol == nil self.tcol = 0xFFFFFF end
+    self.period = int(num(store.get("every"), 5)) * 60
+    self.pageMs = int(num(store.get("pageSec"), 3)) * 1000
+    self.pxps = 21 * int(num(store.get("speed"), 200)) / 100         # the device scrolls at 21 px/s = 100 %
+    if self.pxps < 1 self.pxps = 1 end
+    self.gap = int(num(store.get("gap"), 24))
+    self.moveP = num(store.get("move"), 3) + 0.0
+    self.holdMs = int(num(store.get("hold"), 2)) * 1000
+    self.opts = {'headers': {'User-Agent': 'AWTRIX-NG'}, 'find': "\"regularMarketPrice\":", 'keep': 900}
+    self.probe = {'headers': {'User-Agent': 'AWTRIX-NG'}, 'cap': 16}
+    self.eopts = {'headers': {'User-Agent': 'AWTRIX-NG', 'Accept': 'application/json'}, 'find': "\"reportText\"", 'keep': 320}
+    self.ps = nil
+    self.pe = nil
+    self.goff = nil
+    self.open = false
+    self.closedRound = false
+    self.upd = nil
+    self.b1 = nil
+    self.b2 = nil
+    self.bcol = self.tcol
+    self.bk = 0
+    self.bW = 0
+    # Symbols: letters, digits, dot, dash and a leading ^ for indices; nothing else reaches a URL.
+    var raw = store.get("stocks")
+    var found = raw == nil ? [] : re.matchall("[A-Za-z0-9.^-]+", str(raw))
+    for m : found
+      if size(self.syms) >= 20 break end
+      if size(m) > 12 continue end
+      var i = size(self.syms)
+      var sym = string.toupper(m)
+      self.syms.push(sym)
+      self.usym.push(string.tr(sym, "^", "%5E"))
+      self.logo.push(nil)
+      self.lblP.push("...")
+      self.dir.push(0)
+      self.pct.push(nil)
+      self.chg.push(nil)
+      self.pTxt.push("--")
+      self.pcol.push(0x808080)
+      self.sw.push(0)
+      self.eTxt.push(nil)
+      self.bad.push(false)
+      self.eAbs.push(nil)
+      self.eFlag.push("")
+      self.eDay.push(nil)
+      self.w.push(0)
+      self.w2.push(0)
+      self.fired.push(-1)
+      var q = store.get("q" + str(i))              # last good quote, shown until the first fetch
+      if isinstance(q, list) && size(q) == 4 && q[0] == sym && num(q[1]) != nil
+        self.apply(i, num(q[1]) + 0.0, num(q[2]), num(q[3]))
+      end
+      var e = store.get("e" + str(i))              # earnings date fetched earlier today survives a restart
+      if isinstance(e, list) && size(e) == 4 && e[0] == sym
+        self.eAbs[i] = num(e[1])
+        self.eFlag[i] = str(e[2])
+        self.eDay[i] = num(e[3])
+      end
+      var lg = store.get("lg" + str(i))            # which logo source answered, decided once per symbol
+      if isinstance(lg, list) && size(lg) == 2 && lg[0] == sym
+        self.logo[i] = str(lg[1])
+      else                                         # not decided yet: draw from the first source meanwhile
+        self.logo[i] = "https://raw.githubusercontent.com/nvstly/icons/main/ticker_icons/" + self.usym[i] + ".png"
+        self.lgOpen.push(i)
+      end
+    end
+    self.rebuild()
+    self.ticks = 0                                  # fetch a round right away
+    self.fi = size(self.syms)
+    self.ei = size(self.syms)
+    self.in_flight = false
+    self.t0 = now_ms()
+    self.shift = 0
+    self.pauseUntil = 0
+    self.pauseStart = 0
+    self.frozen = 0
+    self.pauseIdx = -1
+    self.firedB = -1
+  end
+
+  # Logo source, probed once per symbol and remembered: the transparent set first, else the second source.
+  def setup()
+    if !self.logos return end
+    for i : self.lgOpen
+      var a = self.logo[i]
+      var b = "https://financialmodelingprep.com/image-stock/" + self.usym[i] + ".png"
+      http.get(a, def (body, st)
+        if st == 0 return end                       # no answer: ask again next start
+        self.logo[i] = st == 404 ? b : a
+        store.set("lg" + str(i), [self.syms[i], self.logo[i]])
+      end, self.probe)
+    end
+  end
+
+  # Price text and direction from a quote. Called from the fetch and from init() for stored values.
+  def apply(i, p, chg, pct)
+    if p >= 10000 self.lblP[i] = string.format("%.0f", p)
+    elif p >= 1000 self.lblP[i] = string.format("%.1f", p)
+    else self.lblP[i] = string.format("%.2f", p) end
+    self.dir[i] = chg == nil ? 0 : (chg > 0 ? 1 : (chg < 0 ? -1 : 0))
+    self.pct[i] = pct
+    self.chg[i] = chg
+    self.bad[i] = false
+  end
+
+  def mover(i)
+    var v = self.pct[i]
+    if !self.fx || v == nil || self.moveP <= 0 return 0 end
+    if v >= self.moveP return 1 end
+    if v <= -self.moveP return -1 end
+    return 0
+  end
+
+  # The change text, unsigned (colour and the arrow carry direction), at the longest precision that fits.
+  def fit(avail, v)
+    var a = v < 0 ? -v : v
+    if self.showAmt
+      for f : (a < 10 ? ["%.2f", "%.1f", "%.0f"] : (a < 100 ? ["%.1f", "%.0f"] : ["%.0f"]))
+        var s = string.format(f, a)
+        if text_ink_width(s) <= avail return s end
+      end
+      return string.format("%.0f", a)
+    end
+    var s1 = string.format("%.1f", a) + "%"
+    return text_ink_width(s1) <= avail ? s1 : string.format("%.0f", a) + "%"
+  end
+
+  # Width of one ticker block without its gap: logo, then the wider of the two rows.
+  def segw(i)
+    var m = self.w[i] > self.w2[i] ? self.w[i] : self.w2[i]
+    return (self.logos ? 17 : 0) + m
+  end
+
+  # Texts and the page list. Called after every change outside draw(); never per frame.
+  def rebuild()
+    var s = []
+    if self.b1 != nil s.push([0, 0, self.pageMs]) end
+    for i : 0 .. size(self.syms) - 1
+      var v = self.showAmt ? self.chg[i] : self.pct[i]
+      self.pcol[i] = v == nil ? 0x808080 : (v > 0 ? self.upc : (v < 0 ? self.dnc : 0x808080))
+      font("large")
+      self.sw[i] = text_ink_width(self.syms[i])
+      font("small")
+      self.pTxt[i] = v == nil ? "--" : self.fit(35 - self.sw[i] - 2, v)   # 35 columns beside the logo
+      s.push([i, 1, self.pageMs + (self.mover(i) != 0 ? self.holdMs : 0)])
+      if self.eTxt[i] != nil s.push([i, 2, self.pageMs]) end
+    end
+    self.slots = s
+    var tt = 0
+    for sl : s tt += sl[2] end
+    self.total = tt > 0 ? tt : 1
+    self.dirty = true
+  end
+
+  # Ticker widths. Called from draw() and duration() when dirty, never per frame.
+  def measure()
+    self.L = 0
+    self.bW = 0
+    if self.b1 != nil
+      font("small")
+      var a = text_width(self.b1)
+      font("large")
+      var b = text_width(self.b2)
+      self.bW = 17 + (a > b ? a : b) + self.gap
+      self.L = self.bW
+    end
+    for i : 0 .. size(self.syms) - 1
+      font("small")
+      if self.bad[i]
+        self.w[i] = text_width("NO SUCH TICKER")
+      else
+        self.w[i] = self.sw[i] + 2 + text_width(self.pTxt[i])
+        if self.eTxt[i] != nil self.w[i] += text_width(" EARN " + self.eTxt[i]) end
+      end
+      font("large")
+      self.w2[i] = self.bad[i] ? self.sw[i] : text_width(self.lblP[i]) + 7   # price plus the direction arrow
+      self.L += self.segw(i) + self.gap
+    end
+    self.dirty = false
+  end
+
+  def today()
+    return (epoch_ms() / 1000 + (self.goff == nil ? -14400 : self.goff)) / 86400
+  end
+
+  def on_body(i, b, st)
+    self.in_flight = false
+    if b == nil
+      if st == 404 && !self.bad[i]                  # unknown symbol: say so instead of showing stale numbers
+        self.bad[i] = true
+        self.lblP[i] = "--"
+        self.dir[i] = 0
+        self.pct[i] = nil
+        self.chg[i] = nil
+        self.rebuild()
+      end
+      return                                        # anything else: keep the last good value
+    end
+    var m = re.search("\"regularMarketPrice\":([-0-9.]+)", b)
+    var mc = re.search("\"regularMarketChangePercent\":([-0-9.]+)", b)
+    var mp = re.search("\"chartPreviousClose\":([-0-9.]+)", b)
+    if m == nil return end
+    var p = num(m[1])
+    if p == nil return end
+    p = p + 0.0
+    var prev = mp == nil ? nil : num(mp[1])
+    var pct = mc == nil ? nil : num(mc[1])
+    var chg = prev == nil ? nil : p - prev
+    if pct == nil && prev != nil && prev != 0 pct = chg * 100.0 / prev end
+    if i == 0                                     # the first stock's exchange sets the market hours
+      var mr = re.search("\"regular\":.([^}]*)", b)
+      if mr != nil
+        var ms = re.search("\"start\":(\\d+)", mr[1])
+        var me = re.search("\"end\":(\\d+)", mr[1])
+        var mo = re.search("\"gmtoffset\":(-?\\d+)", mr[1])
+        if ms != nil && me != nil && mo != nil
+          self.ps = num(ms[1])
+          self.pe = num(me[1])
+          self.goff = num(mo[1])
+        end
+      end
+      var h = hour()
+      var mi = minute()
+      if h >= 0
+        var mm = mi < 10 ? "0" + str(mi) : str(mi)
+        if settings.get("time24h") == false
+          self.upd = str(h % 12 == 0 ? 12 : h % 12) + ":" + mm + (h < 12 ? " AM" : " PM")
+        else
+          self.upd = str(h) + ":" + mm
+        end
+      end
+    end
+    self.apply(i, p, chg, pct)
+    self.rebuild()
+    store.set("q" + str(i), [self.syms[i], p, chg, pct])
+  end
+
+  # Nasdaq's sentence: "... to report earnings on  11/02/2026 after market close. ..."
+  def on_earn(i, b, st)
+    self.in_flight = false
+    if st == 0 return end                           # no answer: try again next round
+    var td = self.today()
+    self.eDay[i] = td
+    var m = b == nil ? nil : re.search("on\\s+(\\d+)/(\\d+)/(\\d+)", b)
+    if m == nil
+      self.eAbs[i] = nil
+    else
+      var y = num(m[3])
+      var mo = num(m[1])
+      var d = num(m[2])
+      y -= mo <= 2 ? 1 : 0                          # days since 1970 from a civil date
+      var era = (y >= 0 ? y : y - 399) / 400
+      var yoe = y - era * 400
+      var doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1
+      self.eAbs[i] = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+      self.eFlag[i] = re.search("after market close", b) != nil ? "AMC" :
+                      (re.search("before market open", b) != nil ? "BMO" : "")
+    end
+    store.set("e" + str(i), [self.syms[i], self.eAbs[i], self.eFlag[i], td])
+    self.status()
+  end
+
+  # Banner, open/closed state and earnings countdowns. Runs from loop() and only rebuilds when text changes.
+  # Outside the quote's session the next open is 9:30 exchange time on the next weekday.
+  def status()
+    if self.pe == nil || epoch_ms() < 0 return end
+    var now = epoch_ms() / 1000
+    var s = self.ps
+    var e = self.pe
+    if now >= e                                     # the quote's session is over: build the next from the weekday rule
+      var day = (now + self.goff) / 86400           # days since 1970 in exchange time; 1970-01-01 was a Thursday
+      s = day * 86400 + 34200 - self.goff
+      e = s + 23400
+      while now >= e || (day + 4) % 7 == 0 || (day + 4) % 7 == 6
+        day += 1
+        s = day * 86400 + 34200 - self.goff
+        e = s + 23400
+      end
+    end
+    var wasOpen = self.open
+    self.open = now >= s && now < e
+    if self.open && !wasOpen
+      self.closedRound = false                      # a new session: fetch again
+      self.ticks = 0
+    end
+    var b1 = nil
+    var b2 = nil
+    var c = self.tcol
+    var bk = 0
+    if self.open
+      var m = (e - now + 59) / 60
+      if m <= 30
+        b1 = "CLOSING"
+        b2 = str(m) + " MIN"
+        c = self.dnc
+        bk = 3
+      else
+        b1 = "UPDATED"
+        b2 = self.upd == nil ? "..." : self.upd
+        bk = 1
+      end
+    else
+      var m = (s - now + 59) / 60
+      if m <= 30
+        b1 = "OPENING"
+        b2 = str(m) + " MIN"
+        c = self.upc
+        bk = 2
+      else
+        b1 = "MARKETS"
+        b2 = "CLOSED"
+        c = 0x9E9E9E
+        bk = 0
+      end
+    end
+    self.bk = bk
+    var changed = b1 != self.b1 || b2 != self.b2
+    self.b1 = b1
+    self.b2 = b2
+    self.bcol = c
+    var td = self.today()
+    for i : 0 .. size(self.syms) - 1              # countdown text, shown for 3 days or less
+      var t = nil
+      if self.eAbs[i] != nil
+        var d = self.eAbs[i] - td
+        if d >= 0 && d <= 3
+          t = (d == 0 ? "TODAY" : (d == 1 ? "TOMORROW" : "IN " + str(d) + "D"))
+          if self.eFlag[i] != "" t = t + " " + self.eFlag[i] end
+        end
+      end
+      if t != self.eTxt[i]
+        self.eTxt[i] = t
+        changed = true
+      end
+    end
+    if changed self.rebuild() end
+  end
+
+  def loop()
+    self.status()
+    if self.ticks <= 0
+      self.ticks = self.period
+      self.ei = 0                                   # earnings: once per exchange day per stock
+      if self.pe == nil || self.open || !self.closedRound
+        self.fi = 0                                 # quotes: every period while open, once more after the close
+        self.closedRound = self.pe != nil && !self.open
+      end
+    end
+    self.ticks -= 1
+    if self.in_flight return end                    # one request at a time
+    if self.fi < size(self.syms)
+      var i = self.fi
+      self.fi += 1
+      self.in_flight = true
+      http.get("https://query1.finance.yahoo.com/v8/finance/chart/" + self.usym[i] + "?interval=1d&range=1d",
+               / b, st -> self.on_body(i, b, st), self.opts)
+      return
+    end
+    var td = self.today()
+    while self.ei < size(self.syms) && (self.eDay[self.ei] == td || self.bad[self.ei]) self.ei += 1 end
+    if self.ei < size(self.syms)
+      var i = self.ei
+      self.ei += 1
+      self.in_flight = true
+      http.get("https://api.nasdaq.com/api/analyst/" + self.usym[i] + "/earnings-date",
+               / b, st -> self.on_earn(i, b, st), self.eopts)
+    end
+  end
+
+  # 16x16 market glyphs at column x: moon (closed), sun (open), sunrise (opening soon), sunset (closing soon).
+  def glyph(x)
+    if self.bk == 0
+      circle_fill(x + 7, 8, 6, 0x5C6BC0)
+      circle_fill(x + 10, 6, 5, 0x000000)
+    elif self.bk == 1
+      circle_fill(x + 8, 8, 4, 0xFFC400)
+      line(x + 8, 1, x + 8, 2, 0xFFC400)
+      line(x + 8, 14, x + 8, 15, 0xFFC400)
+      line(x + 1, 8, x + 2, 8, 0xFFC400)
+      line(x + 14, 8, x + 15, 8, 0xFFC400)
+      pixel(x + 3, 3, 0xFFC400)
+      pixel(x + 12, 3, 0xFFC400)
+      pixel(x + 3, 13, 0xFFC400)
+      pixel(x + 12, 13, 0xFFC400)
+    else
+      var sc = self.bk == 2 ? 0xFFC400 : 0xFF6D00
+      circle_fill(x + 8, 11, 5, sc)
+      rect_fill(x, 12, 17, 4, 0x000000)
+      line(x + 1, 12, x + 14, 12, 0x9E9E9E)
+      if self.bk == 2
+        pixel(x + 8, 3, sc)
+        pixel(x + 3, 5, sc)
+        pixel(x + 13, 5, sc)
+        line(x + 7, 14, x + 8, 13, self.upc)
+        line(x + 8, 13, x + 9, 14, self.upc)
+      else
+        line(x + 7, 13, x + 8, 14, self.dnc)
+        line(x + 8, 14, x + 9, 13, self.dnc)
+      end
+    end
+  end
+
+  # Direction triangle, 5 wide and 3 tall with its top-left at (x, y): up or down in the change colour.
+  def arrow(i, x, y)
+    var c = self.pcol[i]
+    if self.dir[i] > 0
+      pixel(x + 2, y, c)
+      line(x + 1, y + 1, x + 3, y + 1, c)
+      line(x, y + 2, x + 4, y + 2, c)
+    elif self.dir[i] < 0
+      line(x, y, x + 4, y, c)
+      line(x + 1, y + 1, x + 3, y + 1, c)
+      pixel(x + 2, y + 2, c)
+    end
+  end
+
+  # One stock at column x: logo, ticker (large) with the change (small) beside it, the price below, the arrow.
+  def block(i, x)
+    if self.bad[i]                                  # unknown symbol: the name over the message, no logo
+      font("large")
+      text(x, 6, self.syms[i], self.tcol)
+      font("small")
+      text(x, 14, "NO SUCH TICKER", self.dnc)
+      return 0
+    end
+    var x0 = x
+    if self.logos && icon(self.logo[i], x, 0) x0 = x + 17 end   # logo in columns 0-15, one dark column
+    font("large")
+    text(x0, 6, self.syms[i], self.tcol)
+    font("small")
+    var a = self.sw[i] + 2 + text(x0 + self.sw[i] + 2, 6, self.pTxt[i], self.pcol[i])
+    if self.eTxt[i] != nil text(x0 + a, 6, " EARN " + self.eTxt[i], self.amber) end
+    font("large")
+    var pc = self.dir[i] > 0 ? self.upc : (self.dir[i] < 0 ? self.dnc : self.tcol)
+    var pw = text(x0, 14, self.lblP[i], pc)
+    if self.ticker self.arrow(i, x0 + pw + 2, 11)  # ticker: the arrow follows the price...
+    else self.arrow(i, width() - 6, 11) end        # ...pages: it sits in the lower-right corner
+    return self.mover(i)
+  end
+
+  def draw()
+    clear()
+    var n = size(self.syms)
+    if n == 0 return end
+    if self.ticker                                  # blocks entering from the right
+      if self.dirty self.measure() end
+      var run = self.L + width()                    # one full pass; then start over, so the panel is never blank
+      var el = now_ms() - self.t0 - self.shift
+      if self.pauseUntil > 0
+        if now_ms() < self.pauseUntil
+          el = self.frozen
+        else
+          self.shift += now_ms() - self.pauseStart
+          self.pauseUntil = 0
+          el = now_ms() - self.t0 - self.shift
+        end
+      end
+      var pmv = self.pauseUntil > 0 && self.pauseIdx >= 0 ? self.mover(self.pauseIdx) : 0
+      if pmv > 0 effect("Fireworks") end
+      var pass = el * self.pxps / 1000 / run
+      var x = width() - el * self.pxps / 1000 % run
+      if self.b1 != nil
+        if x < width() && x + self.bW > 0
+          self.glyph(x)
+          font("small")
+          text(x + 17, 6, self.b1, self.tcol)
+          font("large")
+          text(x + 17, 14, self.b2, self.bcol)
+          if self.holdMs > 0 && self.pauseUntil == 0 && self.firedB != pass && x <= width() - self.bW + self.gap
+            self.firedB = pass                      # the banner stops too, once per pass
+            self.pauseStart = now_ms()
+            self.pauseUntil = now_ms() + self.holdMs
+            self.frozen = el
+            self.pauseIdx = -1
+          end
+        end
+        x += self.bW
+      end
+      for i : 0 .. n - 1
+        var seg = self.segw(i) + self.gap
+        if x < width() && x + seg > 0                # only what is on the panel; at most two or three logos
+          self.block(i, x)
+          var stop = width() - seg + self.gap       # the block is fully on the panel...
+          if stop < 0 stop = 0 end                  # ...or, if wider than the panel, at the left edge
+          if self.holdMs > 0 && self.pauseUntil == 0 && self.fired[i] != pass && x <= stop
+            self.fired[i] = pass                    # every stock stops once per pass so it can be read
+            self.pauseStart = now_ms()
+            self.pauseUntil = now_ms() + self.holdMs
+            self.frozen = el
+            self.pauseIdx = i
+          end
+        end
+        x += seg
+      end
+      if pmv < 0 overlay("rain") end
+      return
+    end
+    var el = (now_ms() - self.t0) % self.total     # pages: walk the slot list by time
+    var k = 0
+    var acc = 0
+    while k < size(self.slots) - 1 && el >= acc + self.slots[k][2]
+      acc += self.slots[k][2]
+      k += 1
+    end
+    var sl = self.slots[k]
+    var i = sl[0]
+    var cur = i
+    if sl[1] == 0                                   # banner page: glyph, then the two rows like a stock
+      self.glyph(0)
+      font("small")
+      text(17, 6, self.b1, self.tcol)
+      font("large")
+      text(17, 14, self.b2, self.bcol)
+      cur = -1
+    elif sl[1] == 2                                 # earnings page
+      font("large")
+      text(0, 6, self.syms[i] + " EARNS", self.tcol)
+      text(0, 14, self.eTxt[i], self.amber)
+    else
+      var mv = self.mover(i)
+      if mv > 0 effect("Fireworks") end             # a big move: effect behind the same frame
+      self.block(i, 0)
+      if mv < 0 overlay("rain") end
+    end
+    for k2 : 0 .. n - 1                             # one dot per stock, the current one bright
+      pixel(width() - 1 - (n - 1 - k2) * 2, 15, k2 == cur ? self.tcol : 0x303030)
+    end
+  end
+
+  def on_show()
+    self.t0 = now_ms()
+    self.shift = 0
+    self.pauseUntil = 0
+    for i : 0 .. size(self.fired) - 1 self.fired[i] = -1 end
+    self.firedB = -1
+  end
+
+  # Knob: turn to step between stocks in both modes; press to switch the change between percent and amount.
+  def on_knob(ev)
+    var n = size(self.syms)
+    if n == 0 return false end
+    if ev == "press"
+      self.showAmt = !self.showAmt
+      store.set("showAmt", self.showAmt)
+      self.rebuild()
+      return true
+    end
+    if ev != "left" && ev != "right" return false end
+    if !self.ticker
+      var el = (now_ms() - self.t0) % self.total
+      var k = 0
+      var acc = 0
+      while k < size(self.slots) - 1 && el >= acc + self.slots[k][2]
+        acc += self.slots[k][2]
+        k += 1
+      end
+      var ns = size(self.slots)
+      k = (k + (ev == "right" ? 1 : ns - 1)) % ns
+      acc = 0
+      for j : 0 .. k - 1 acc += self.slots[j][2] end
+      self.t0 = now_ms() - acc
+      return true
+    end
+    if self.dirty self.measure() end                # ticker: jump the line so the neighbour block sits on the panel, and hold it
+    var run = self.L + width()
+    var el = self.pauseUntil > 0 ? self.frozen : now_ms() - self.t0 - self.shift
+    var pos = el * self.pxps / 1000 % run
+    var cur = -1
+    var off = self.bW
+    for i : 0 .. n - 1                              # the current stock: the last block that has entered the panel
+      if width() - pos + off <= width() - 1 cur = i end
+      off += self.segw(i) + self.gap
+    end
+    var j = ev == "right" ? (cur + 1) % n : (cur <= 0 ? n - 1 : cur - 1)
+    off = self.bW
+    for i : 0 .. j - 1 off += self.segw(i) + self.gap end
+    var seg = self.segw(j) + self.gap
+    var stop = width() - seg + self.gap
+    if stop < 0 stop = 0 end
+    var target = ((width() - stop + off) * 1000 + self.pxps - 1) / self.pxps   # el at which block j stands exactly at its stop
+    self.shift = 0
+    self.t0 = now_ms() - target
+    self.frozen = target
+    self.pauseStart = now_ms()
+    self.pauseUntil = now_ms() + (self.holdMs > 0 ? self.holdMs : 3000)
+    self.pauseIdx = j
+    self.firedB = 0
+    for i : 0 .. n - 1 self.fired[i] = i <= j ? 0 : -1 end   # earlier blocks will not stop again this pass
+    return true
+  end
+
+  def duration()
+    if !self.ticker return self.total end
+    if self.dirty self.measure() end
+    var holds = self.holdMs * (size(self.syms) + (self.b1 == nil ? 0 : 1))
+    return (self.L + width()) * 1000 / self.pxps + holds + 500   # one full pass of the line with its stops, then the rotation moves on
+  end
+
+  def should_show()
+    return size(self.syms) > 0
+  end
+end
+
+return Stocks()
